@@ -32,21 +32,49 @@ export class DiffWithNextCommand extends ActiveEditorCommand {
             args.line = editor === undefined ? 0 : editor.selection.active.line;
         }
 
+        const gitUri = await GitUri.fromUri(uri, this.git);
+
         if (args.commit === undefined || !(args.commit instanceof GitLogCommit) || args.range !== undefined) {
-            const gitUri = await GitUri.fromUri(uri, this.git);
-
             try {
-                // If the sha is missing or the file is uncommitted, treat it as a DiffWithWorking
-                if (gitUri.sha === undefined && await this.git.isFileUncommitted(gitUri)) {
-                    return commands.executeCommand(Commands.DiffWithWorking, uri);
-                }
+                let sha = args.commit === undefined ? gitUri.sha : args.commit.sha;
 
-                const sha = args.commit === undefined ? gitUri.sha : args.commit.sha;
+                // If we are a fake "staged" sha, remove it
+                let isStagedUncommitted = false;
+                if (GitService.isStagedUncommitted(sha!)) {
+                    gitUri.sha = sha = undefined;
+                    isStagedUncommitted = true;
+                }
 
                 const log = await this.git.getLogForFile(gitUri.repoPath, gitUri.fsPath, undefined, { maxCount: sha !== undefined ? undefined : 2, range: args.range! });
                 if (log === undefined) return Messages.showFileNotUnderSourceControlWarningMessage('Unable to open compare');
 
                 args.commit = (sha && log.commits.get(sha)) || Iterables.first(log.commits.values());
+
+                // If the sha is missing or the file is uncommitted, treat it as a DiffWithWorking
+                if (gitUri.sha === undefined && await this.git.isFileUncommitted(gitUri)) {
+                    if (isStagedUncommitted) {
+                        // const status = await this.git.getStatusForFile(gitUri.repoPath!, gitUri.fsPath);
+                        // if (status !== undefined && status.workTreeStatus === 'M') {
+                            const diffArgs: DiffWithCommandArgs = {
+                                repoPath: args.commit.repoPath,
+                                lhs: {
+                                    sha: GitService.stagedUncommittedSha,
+                                    uri: args.commit.uri
+                                },
+                                rhs: {
+                                    sha: '',
+                                    uri: args.commit.uri
+                                },
+                                line: args.line,
+                                showOptions: args.showOptions
+                            };
+
+                            return commands.executeCommand(Commands.DiffWith, diffArgs);
+                        // }
+                    }
+
+                    return commands.executeCommand(Commands.DiffWithWorking, uri);
+                }
             }
             catch (ex) {
                 Logger.error(ex, 'DiffWithNextCommand', `getLogForFile(${gitUri.repoPath}, ${gitUri.fsPath})`);
@@ -54,7 +82,29 @@ export class DiffWithNextCommand extends ActiveEditorCommand {
             }
         }
 
-        if (args.commit.nextSha === undefined) return commands.executeCommand(Commands.DiffWithWorking, uri);
+        if (args.commit.nextSha === undefined) {
+            // Check if the file is staged
+            const status = await this.git.getStatusForFile(gitUri.repoPath!, gitUri.fsPath);
+            if (status !== undefined && status.indexStatus === 'M') {
+                const diffArgs: DiffWithCommandArgs = {
+                    repoPath: args.commit.repoPath,
+                    lhs: {
+                        sha: args.commit.sha,
+                        uri: args.commit.uri
+                    },
+                    rhs: {
+                        sha: GitService.stagedUncommittedSha,
+                        uri: args.commit.uri
+                    },
+                    line: args.line,
+                    showOptions: args.showOptions
+                };
+
+                return commands.executeCommand(Commands.DiffWith, diffArgs);
+            }
+
+            return commands.executeCommand(Commands.DiffWithWorking, uri);
+        }
 
         const diffArgs: DiffWithCommandArgs = {
             repoPath: args.commit.repoPath,

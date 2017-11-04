@@ -3,7 +3,7 @@ import { Iterables } from '../system';
 import { Disposable, TreeItem, TreeItemCollapsibleState } from 'vscode';
 import { CommitFileNode, CommitFileNodeDisplayAs } from './commitFileNode';
 import { ExplorerNode, MessageNode, ResourceType } from './explorerNode';
-import { GitUri, Repository, RepositoryChange, RepositoryChangeEvent } from '../gitService';
+import { GitCommitType, GitLogCommit, GitService, GitUri, Repository, RepositoryChange, RepositoryChangeEvent } from '../gitService';
 import { GitExplorer } from './gitExplorer';
 import { Logger } from '../logger';
 
@@ -20,10 +20,34 @@ export class FileHistoryNode extends ExplorerNode {
     async getChildren(): Promise<ExplorerNode[]> {
         this.updateSubscription();
 
+        const children: ExplorerNode[] = [];
+
         const log = await this.explorer.git.getLogForFile(this.uri.repoPath, this.uri.fsPath, this.uri.sha);
         if (log === undefined) return [new MessageNode('No file history')];
 
-        return [...Iterables.map(log.commits.values(), c => new CommitFileNode(c.fileStatuses[0], c, this.explorer, CommitFileNodeDisplayAs.CommitLabel | CommitFileNodeDisplayAs.StatusIcon))];
+        if (this.explorer.git.isFileUncommitted(this.uri)) {
+            const status = await this.explorer.git.getStatusForFile(this.uri.repoPath!, this.uri.fsPath);
+            if (status !== undefined && status.indexStatus === 'M') {
+                const commit = new GitLogCommit(
+                    GitCommitType.File,
+                    this.uri.repoPath!,
+                    GitService.stagedUncommittedSha,
+                    status.fileName,
+                    'You',
+                    new Date(),
+                    '',
+                    status.status,
+                    [status],
+                    status.originalFileName,
+                    'HEAD',
+                    status.originalFileName || status.fileName);
+                children.push(new CommitFileNode(status, commit, this.explorer, CommitFileNodeDisplayAs.CommitLabel | CommitFileNodeDisplayAs.StatusIcon));
+            }
+        }
+
+        children.push(...Iterables.map(log.commits.values(), c => new CommitFileNode(c.fileStatuses[0], c, this.explorer, CommitFileNodeDisplayAs.CommitLabel | CommitFileNodeDisplayAs.StatusIcon)));
+
+        return children;
     }
 
     getTreeItem(): TreeItem {
